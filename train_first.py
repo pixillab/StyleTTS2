@@ -46,7 +46,6 @@ def main(config_path):
     if accelerator.is_main_process:
         writer = SummaryWriter(log_dir + "/tensorboard")
 
-    # write logs
     file_handler = logging.FileHandler(osp.join(log_dir, 'train.log'))
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter('%(levelname)s:%(asctime)s: %(message)s'))
@@ -126,6 +125,8 @@ def main(config_path):
     gl = GeneratorLoss(model.mpd, model.msd).to(device)
     dl = DiscriminatorLoss(model.mpd, model.msd).to(device)
     wl = WavLMLoss(model_params.slm.model, model.wd, sr, model_params.slm.sr).to(device)
+
+    torch.autograd.set_detect_anomaly(True)
 
     for epoch in range(start_epoch, epochs):
         running_loss = 0
@@ -238,11 +239,29 @@ def main(config_path):
             else:
                 d_loss = 0
 
-            # generator loss
             optimizer.zero_grad()
             loss_mel = stft_loss(y_rec.squeeze(), wav.detach())
 
-            if epoch >= TMA_epoch:  # start TMA training
+            # === NaN + value check for mel loss ===
+            if torch.isnan(loss_mel):
+                print(f"[Step {i}] NaN in loss_mel — dumping debug info")
+                print("waveform max/min:", wav.max().item(), wav.min().item())
+                print("y_rec max/min:", y_rec.max().item(), y_rec.min().item())
+                print("gt max/min:", gt.max().item(), gt.min().item())
+                print("style vector norm:", s.norm().item())
+                continue
+
+            if loss_mel.item() > 1000:
+                print(f"[Step {i}] Skipping unusually high mel loss: {loss_mel.item()}")
+                continue
+
+            if torch.isnan(gt).any() or torch.isnan(wav).any():
+                print("NaN in input tensors. Skipping step.")
+                continue
+
+            y_rec = y_rec.clamp(-1.0, 1.0)  # Clamp before loss
+
+            if epoch >= TMA_epoch:
                 loss_s2s = 0
                 for _s2s_pred, _text_input, _text_length in zip(s2s_pred, texts, input_lengths):
                     loss_s2s += F.cross_entropy(_s2s_pred[:_text_length], _text_input[:_text_length])
@@ -254,10 +273,10 @@ def main(config_path):
                 loss_slm = wl(wav.detach(), y_rec).mean()
 
                 g_loss = loss_params.lambda_mel * loss_mel + \
-                         loss_params.lambda_mono * loss_mono + \
-                         loss_params.lambda_s2s * loss_s2s + \
-                         loss_params.lambda_gen * loss_gen_all + \
-                         loss_params.lambda_slm * loss_slm
+                          loss_params.lambda_mono * loss_mono + \
+                          loss_params.lambda_s2s * loss_s2s + \
+                          loss_params.lambda_gen * loss_gen_all + \
+                          loss_params.lambda_slm * loss_slm
             else:
                 loss_s2s = 0
                 loss_mono = 0
@@ -269,10 +288,9 @@ def main(config_path):
 
             accelerator.backward(g_loss)
 
-            # Clip gradients here
-            torch.nn.utils.clip_grad_norm_(model['decoder'].parameters(), 1.0)
-            torch.nn.utils.clip_grad_norm_(model['style_encoder'].parameters(), 1.0)
-            torch.nn.utils.clip_grad_norm_(model['text_encoder'].parameters(), 1.0)
+            # === Gradient clipping ===
+            for key in ["decoder", "style_encoder", "text_encoder"]:
+                torch.nn.utils.clip_grad_norm_(model[key].parameters(), 1.0)
             if epoch >= TMA_epoch:
                 torch.nn.utils.clip_grad_norm_(model['text_aligner'].parameters(), 1.0)
                 torch.nn.utils.clip_grad_norm_(model['pitch_extractor'].parameters(), 1.0)
