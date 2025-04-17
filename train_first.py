@@ -241,43 +241,49 @@ def main(config_path):
             # generator loss
             optimizer.zero_grad()
             loss_mel = stft_loss(y_rec.squeeze(), wav.detach())
-            
-            if epoch >= TMA_epoch: # start TMA training
+
+            if epoch >= TMA_epoch:  # start TMA training
                 loss_s2s = 0
                 for _s2s_pred, _text_input, _text_length in zip(s2s_pred, texts, input_lengths):
                     loss_s2s += F.cross_entropy(_s2s_pred[:_text_length], _text_input[:_text_length])
                 loss_s2s /= texts.size(0)
 
                 loss_mono = F.l1_loss(s2s_attn, s2s_attn_mono) * 10
-                    
+
                 loss_gen_all = gl(wav.detach().unsqueeze(1).float(), y_rec).mean()
                 loss_slm = wl(wav.detach(), y_rec).mean()
-                
-                g_loss = loss_params.lambda_mel * loss_mel + \
-                loss_params.lambda_mono * loss_mono + \
-                loss_params.lambda_s2s * loss_s2s + \
-                loss_params.lambda_gen * loss_gen_all + \
-                loss_params.lambda_slm * loss_slm
 
+                g_loss = loss_params.lambda_mel * loss_mel + \
+                         loss_params.lambda_mono * loss_mono + \
+                         loss_params.lambda_s2s * loss_s2s + \
+                         loss_params.lambda_gen * loss_gen_all + \
+                         loss_params.lambda_slm * loss_slm
             else:
                 loss_s2s = 0
                 loss_mono = 0
                 loss_gen_all = 0
                 loss_slm = 0
                 g_loss = loss_mel
-            
+
             running_loss += accelerator.gather(loss_mel).mean().item()
 
             accelerator.backward(g_loss)
-            
+
+            # Clip gradients here
+            torch.nn.utils.clip_grad_norm_(model['decoder'].parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model['style_encoder'].parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model['text_encoder'].parameters(), 1.0)
+            if epoch >= TMA_epoch:
+                torch.nn.utils.clip_grad_norm_(model['text_aligner'].parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(model['pitch_extractor'].parameters(), 1.0)
+
             optimizer.step('text_encoder')
             optimizer.step('style_encoder')
             optimizer.step('decoder')
-            
-            if epoch >= TMA_epoch: 
+            if epoch >= TMA_epoch:
                 optimizer.step('text_aligner')
                 optimizer.step('pitch_extractor')
-            
+
             iters = iters + 1
             
             if (i+1)%log_interval == 0 and accelerator.is_main_process:
