@@ -5,11 +5,13 @@ log_interval: 10
 device: "cuda"
 epochs_1st: 200 # number of epochs for first stage training (pre-training)
 epochs_2nd: 100 # number of peochs for second stage training (joint training)
-batch_size: 16
-max_len: 400 # maximum number of frames
-pretrained_model: ""
+batch_size: 32
+max_len: 200 # maximum number of frames
+pretrained_model: "Models/LJSpeech/epoch_1st_00002.pth"
 second_stage_load_pretrained: true # set to true if the pre-trained model is for 2nd stage
 load_only_params: false # set to true if do not want to load epoch numbers and optimizer parameters
+compute_environment: LOCAL_MACHINE
+mixed_precision: no
 
 F0_path: "Utils/JDC/bst.t7"
 ASR_config: "Utils/ASR/config.yml"
@@ -19,7 +21,7 @@ PLBERT_dir: 'Utils/PLBERT/'
 data_params:
   train_data: "Data/train_list.txt"
   val_data: "Data/val_list.txt"
-  root_path: "/local/LJSpeech-1.1/wavs"
+  root_path: "/root/datasets/LJSpeech-1.1-24k/wavs"
   OOD_data: "Data/OOD_texts.txt"
   min_length: 50 # sample until texts with this size are obtained for OOD texts
 

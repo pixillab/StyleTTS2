@@ -11,7 +11,9 @@ accelerate
 transformers
 einops
 einops-exts
+pandas
 tqdm
+tensorboard
 typing
 typing-extensions
 git+https://github.com/resemble-ai/monotonic_align.git

@@ -12,10 +12,7 @@ warnings.simplefilter('ignore')
 
 # load packages
 import random
-import yaml
 from munch import Munch
-import numpy as np
-import torch
 from torch import nn
 import torch.nn.functional as F
 import torchaudio
@@ -31,23 +28,21 @@ import time
 from accelerate import Accelerator
 from accelerate.utils import LoggerType
 from accelerate import DistributedDataParallelKwargs
-
 from torch.utils.tensorboard import SummaryWriter
-
 import logging
 from accelerate.logging import get_logger
+
 logger = get_logger(__name__, log_level="DEBUG")
 
 @click.command()
 @click.option('-p', '--config_path', default='Configs/config.yml', type=str)
 def main(config_path):
     config = yaml.safe_load(open(config_path))
-
     log_dir = config['log_dir']
-    if not osp.exists(log_dir): os.makedirs(log_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
     shutil.copy(config_path, osp.join(log_dir, osp.basename(config_path)))
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-    accelerator = Accelerator(project_dir=log_dir, split_batches=True, kwargs_handlers=[ddp_kwargs])    
+    accelerator = Accelerator(project_dir=log_dir, split_batches=True, kwargs_handlers=[ddp_kwargs])
     if accelerator.is_main_process:
         writer = SummaryWriter(log_dir + "/tensorboard")
 
@@ -56,15 +51,13 @@ def main(config_path):
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter('%(levelname)s:%(asctime)s: %(message)s'))
     logger.logger.addHandler(file_handler)
-    
+
     batch_size = config.get('batch_size', 10)
     device = accelerator.device
-    
     epochs = config.get('epochs_1st', 200)
     save_freq = config.get('save_freq', 2)
     log_interval = config.get('log_interval', 10)
     saving_epoch = config.get('save_freq', 2)
-    
     data_params = config.get('data_params', None)
     sr = config['preprocess_params'].get('sr', 24000)
     train_path = data_params['train_data']
@@ -72,42 +65,18 @@ def main(config_path):
     root_path = data_params['root_path']
     min_length = data_params['min_length']
     OOD_data = data_params['OOD_data']
-    
     max_len = config.get('max_len', 200)
-    
-    # load data
+
     train_list, val_list = get_data_path_list(train_path, val_path)
+    train_dataloader = build_dataloader(train_list, root_path, OOD_data=OOD_data, min_length=min_length, batch_size=batch_size, num_workers=2, dataset_config={}, device=device)
+    val_dataloader = build_dataloader(val_list, root_path, OOD_data=OOD_data, min_length=min_length, batch_size=batch_size, validation=True, num_workers=0, device=device, dataset_config={})
 
-    train_dataloader = build_dataloader(train_list,
-                                        root_path,
-                                        OOD_data=OOD_data,
-                                        min_length=min_length,
-                                        batch_size=batch_size,
-                                        num_workers=2,
-                                        dataset_config={},
-                                        device=device)
-
-    val_dataloader = build_dataloader(val_list,
-                                      root_path,
-                                      OOD_data=OOD_data,
-                                      min_length=min_length,
-                                      batch_size=batch_size,
-                                      validation=True,
-                                      num_workers=0,
-                                      device=device,
-                                      dataset_config={})
-    
     with accelerator.main_process_first():
-        # load pretrained ASR model
         ASR_config = config.get('ASR_config', False)
         ASR_path = config.get('ASR_path', False)
         text_aligner = load_ASR_models(ASR_path, ASR_config)
-
-        # load pretrained F0 model
         F0_path = config.get('F0_path', False)
         pitch_extractor = load_F0_models(F0_path)
-
-        # load BERT model
         from Utils.PLBERT.util import load_plbert
         BERT_path = config.get('PLBERT_dir', False)
         plbert = load_plbert(BERT_path)
@@ -118,58 +87,45 @@ def main(config_path):
         "epochs": epochs,
         "steps_per_epoch": len(train_dataloader),
     }
-    
+
     model_params = recursive_munch(config['model_params'])
     multispeaker = model_params.multispeaker
     model = build_model(model_params, text_aligner, pitch_extractor, plbert)
 
-    best_loss = float('inf')  # best test loss
-    loss_train_record = list([])
-    loss_test_record = list([])
+    best_loss = float('inf')
+    loss_train_record = []
+    loss_test_record = []
 
     loss_params = Munch(config['loss_params'])
     TMA_epoch = loss_params.TMA_epoch
-    
+    print(f"TMA_epoch is {TMA_epoch}")
+
     for k in model:
         model[k] = accelerator.prepare(model[k])
-    
-    train_dataloader, val_dataloader = accelerator.prepare(
-        train_dataloader, val_dataloader
-    )
-    
+
+    train_dataloader, val_dataloader = accelerator.prepare(train_dataloader, val_dataloader)
     _ = [model[key].to(device) for key in model]
 
-    # initialize optimizers after preparing models for compatibility with FSDP
-    optimizer = build_optimizer({key: model[key].parameters() for key in model},
-                                  scheduler_params_dict= {key: scheduler_params.copy() for key in model},
-                               lr=float(config['optimizer_params'].get('lr', 1e-4)))
-    
-    for k, v in optimizer.optimizers.items():
+    optimizer = build_optimizer({key: model[key].parameters() for key in model}, scheduler_params_dict={key: scheduler_params.copy() for key in model}, lr=float(config['optimizer_params'].get('lr', 1e-4)))
+    for k in optimizer.optimizers:
         optimizer.optimizers[k] = accelerator.prepare(optimizer.optimizers[k])
         optimizer.schedulers[k] = accelerator.prepare(optimizer.schedulers[k])
-    
+
     with accelerator.main_process_first():
-        if config.get('pretrained_model', '') != '':
-            model, optimizer, start_epoch, iters = load_checkpoint(model,  optimizer, config['pretrained_model'],
-                                        load_only_params=config.get('load_only_params', True))
+        if config.get('pretrained_model', ''):
+            model, optimizer, start_epoch, iters = load_checkpoint(model, optimizer, config['pretrained_model'], load_only_params=config.get('load_only_params', True))
         else:
-            start_epoch = 0
-            iters = 0
-    
-    # in case not distributed
+            start_epoch, iters = 0, 0
+
     try:
         n_down = model.text_aligner.module.n_down
     except:
         n_down = model.text_aligner.n_down
-    
-    # wrapped losses for compatibility with mixed precision
+
     stft_loss = MultiResolutionSTFTLoss().to(device)
     gl = GeneratorLoss(model.mpd, model.msd).to(device)
     dl = DiscriminatorLoss(model.mpd, model.msd).to(device)
-    wl = WavLMLoss(model_params.slm.model, 
-                   model.wd, 
-                   sr, 
-                   model_params.slm.sr).to(device)
+    wl = WavLMLoss(model_params.slm.model, model.wd, sr, model_params.slm.sr).to(device)
 
     for epoch in range(start_epoch, epochs):
         running_loss = 0
@@ -230,6 +186,9 @@ def main(config_path):
                 gt.append(mels[bib, :, (random_start * 2):((random_start+mel_len) * 2)])
 
                 y = waves[bib][(random_start * 2) * 300:((random_start+mel_len) * 2) * 300]
+                if y.shape[0] < 1600 or torch.isnan(torch.from_numpy(y)).any():
+                    print(f"Skipping bad audio at index {bib}")
+                    continue
                 wav.append(torch.from_numpy(y).to(device))
                 
                 # style reference (better to be different from the GT)
@@ -241,6 +200,19 @@ def main(config_path):
             st = torch.stack(st).detach()
 
             wav = torch.stack(wav).float().detach()
+            if len(wav) == 0 or len(gt) == 0 or len(en) == 0 or len(st) == 0:
+                print("All examples in batch skipped due to bad audio. Skipping step.")
+                continue
+
+            print(f"[Batch {i}] valid samples: {len(wav)} / {len(mel_input_length)}")
+
+            if torch.isnan(gt).any() or torch.isnan(wav).any():
+                print("Found NaNs in gt or wav")
+                print("gt:", gt)
+                print("wav:", wav)
+                assert not torch.isnan(gt).any(), "NaNs found in ground truth mel"
+                assert not torch.isnan(wav).any(), "NaNs found in waveform"
+                continue
 
             # clip too short to be used by the style encoder
             if gt.shape[-1] < 80:
@@ -251,7 +223,8 @@ def main(config_path):
                 F0_real, _, _ = model.pitch_extractor(gt.unsqueeze(1))
                 
             s = model.style_encoder(st.unsqueeze(1) if multispeaker else gt.unsqueeze(1))
-            
+            gt = gt.clamp(-1.0, 1.0)
+            en = en.clamp(-1e2, 1e2)
             y_rec = model.decoder(en, F0_real, real_norm, s)
             
             # discriminator loss
@@ -368,18 +341,26 @@ def main(config_path):
                     en.append(asr[bib, :, random_start:random_start+mel_len])
                     gt.append(mels[bib, :, (random_start * 2):((random_start+mel_len) * 2)])
                     y = waves[bib][(random_start * 2) * 300:((random_start+mel_len) * 2) * 300]
+                    if y.shape[0] < 1600 or torch.isnan(torch.from_numpy(y)).any():
+                        print(f"Skipping bad audio at index {bib}")
+                        continue
                     wav.append(torch.from_numpy(y).to('cuda'))
-
-                wav = torch.stack(wav).float().detach()
 
                 en = torch.stack(en)
                 gt = torch.stack(gt).detach()
+                wav = torch.stack(wav).float().detach()
+                if len(wav) == 0 or len(gt) == 0 or len(en) == 0 or len(st) == 0:
+                    print("All examples in batch skipped due to bad audio. Skipping step.")
+                    continue
 
                 F0_real, _, F0 = model.pitch_extractor(gt.unsqueeze(1))
                 s = model.style_encoder(gt.unsqueeze(1))
                 real_norm = log_norm(gt.unsqueeze(1)).squeeze(1)
+                gt = gt.clamp(-1.0, 1.0)
+                en = en.clamp(-1e2, 1e2)
                 y_rec = model.decoder(en, F0_real, real_norm, s)
 
+                y_rec = y_rec.clamp(-1.0, 1.0)  # add this
                 loss_mel = stft_loss(y_rec.squeeze(), wav.detach())
 
                 loss_test += accelerator.gather(loss_mel).mean().item()
@@ -403,7 +384,8 @@ def main(config_path):
                     F0_real = F0_real.unsqueeze(0)
                     s = model.style_encoder(gt.unsqueeze(1))
                     real_norm = log_norm(gt.unsqueeze(1)).squeeze(1)
-                    
+                    gt = gt.clamp(-1.0, 1.0)
+                    en = en.clamp(-1e2, 1e2)
                     y_rec = model.decoder(en, F0_real, real_norm, s)
                     
                     writer.add_audio('eval/y' + str(bib), y_rec.cpu().numpy().squeeze(), epoch, sample_rate=sr)

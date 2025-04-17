@@ -103,37 +103,46 @@ class FilePathDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.data_list)
 
-    def __getitem__(self, idx):        
-        data = self.data_list[idx]
-        path = data[0]
-        
-        wave, text_tensor, speaker_id = self._load_tensor(data)
-        
-        mel_tensor = preprocess(wave).squeeze()
-        
-        acoustic_feature = mel_tensor.squeeze()
-        length_feature = acoustic_feature.size(1)
-        acoustic_feature = acoustic_feature[:, :(length_feature - length_feature % 2)]
-        
-        # get reference sample
-        ref_data = (self.df[self.df[2] == str(speaker_id)]).sample(n=1).iloc[0].tolist()
-        ref_mel_tensor, ref_label = self._load_data(ref_data[:3])
-        
-        # get OOD text
-        
-        ps = ""
-        
-        while len(ps) < self.min_length:
-            rand_idx = np.random.randint(0, len(self.ptexts) - 1)
-            ps = self.ptexts[rand_idx]
-            
-            text = self.text_cleaner(ps)
-            text.insert(0, 0)
-            text.append(0)
+    def __getitem__(self, idx):
+        for _ in range(3):  # Try a few times to get a valid sample
+            data = self.data_list[idx]
+            wave, text_tensor, speaker_id = self._load_tensor(data)
 
-            ref_text = torch.LongTensor(text)
-        
-        return speaker_id, acoustic_feature, text_tensor, ref_text, ref_mel_tensor, ref_label, path, wave
+            if wave is None or text_tensor is None:
+                idx = random.randint(0, len(self.data_list) - 1)
+                continue
+
+            mel_tensor = preprocess(wave).squeeze()
+
+            if torch.isnan(mel_tensor).any() or mel_tensor.shape[1] < 80:
+                print(f"[NaN or short mel] Skipping: {data[0]}")
+                idx = random.randint(0, len(self.data_list) - 1)
+                continue
+
+            acoustic_feature = mel_tensor[:, :(mel_tensor.shape[1] - mel_tensor.shape[1] % 2)]
+
+            try:
+                # Reference mel
+                ref_data = (self.df[self.df[2] == str(speaker_id)]).sample(n=1).iloc[0].tolist()
+                ref_mel_tensor, ref_label = self._load_data(ref_data[:3])
+            except:
+                idx = random.randint(0, len(self.data_list) - 1)
+                continue
+
+            # OOD Text
+            ps = ""
+            while len(ps) < self.min_length:
+                rand_idx = np.random.randint(0, len(self.ptexts) - 1)
+                ps = self.ptexts[rand_idx]
+                text = self.text_cleaner(ps)
+                text.insert(0, 0)
+                text.append(0)
+                ref_text = torch.LongTensor(text)
+
+            return speaker_id, acoustic_feature, text_tensor, ref_text, ref_mel_tensor, ref_label, data[0], wave
+
+        # All retries failed — return None
+        return None
 
     def _load_tensor(self, data):
         wave_path, text, speaker_id = data
