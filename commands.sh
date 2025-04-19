@@ -14,12 +14,14 @@ pip freeze | grep torch
 
 # 📦 Python + Env Setup
 # Add deadsnakes PPA
-sudo add-apt-repository ppa:deadsnakes/ppa
-sudo apt update
-sudo apt install python3.10 python3.10-dev python3.10-venv
+add-apt-repository ppa:deadsnakes/ppa
+apt update
+apt install python3.10 python3.10-dev python3.10-venv
+apt install sox gh
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+pip install torch==2.2.2 torchaudio==2.2.2 --extra-index-url https://download.pytorch.org/whl/cu121
 
 # 📁 Dataset & File Navigation
 ls, cd, pwd, cat metadata.csv, ls -ltr
