@@ -1,7 +1,7 @@
 #✅ Training & Debugging StyleTTS2
 accelerate launch --num_processes=1 train_first.py --config_path ./Configs/config.yml
 accelerate launch --num_processes=2 train_first.py --config_path ./Configs/config.yml
-nohup accelerate launch ... > logs/train_$(date +%Y%m%d_%H%M%S).log 2>&1 & disown
+nohup accelerate launch --num_processes=1 train_first.py --config_path ./Configs/config.yml > logs/train_$(date +%Y%m%d_%H%M%S).log 2>&1 & disown
 tail -f logs/train_*.log
 vi Configs/config.yml
 accelerate config
@@ -13,6 +13,10 @@ python -c "import torch; print(torch.cuda.get_device_name(0))"
 pip freeze | grep torch
 
 # 📦 Python + Env Setup
+# Add deadsnakes PPA
+sudo add-apt-repository ppa:deadsnakes/ppa
+sudo apt update
+sudo apt install python3.10 python3.10-dev python3.10-venv
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
