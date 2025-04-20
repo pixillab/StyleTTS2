@@ -134,6 +134,10 @@ def main(config_path):
 
         _ = [model[key].train() for key in model]
 
+        if batch is None or len(batch) < 2:
+            print(f"[Warning] Skipping batch {i} due to missing data.")
+            continue
+
         for i, batch in enumerate(train_dataloader):
             waves = batch[0]
             batch = [b.to(device) for b in batch[1:]]
@@ -187,10 +191,20 @@ def main(config_path):
                 gt.append(mels[bib, :, (random_start * 2):((random_start+mel_len) * 2)])
 
                 y = waves[bib][(random_start * 2) * 300:((random_start+mel_len) * 2) * 300]
-                if y.shape[0] < 1600 or torch.isnan(torch.from_numpy(y)).any():
-                    print(f"Skipping bad audio at index {bib}")
+
+                # Convert to tensor early and check
+                y_tensor = torch.tensor(y)
+
+                if y_tensor.numel() < 1600:
+                    print(f"[Warning] Sample {bib} too short: length={y_tensor.numel()}")
                     continue
-                wav.append(torch.from_numpy(y).to(device))
+
+                if torch.isnan(y_tensor).any() or torch.isinf(y_tensor).any():
+                    print(f"[Warning] Sample {bib} contains NaN or Inf.")
+                    continue
+
+                wav.append(y_tensor.to(device))
+
                 
                 # style reference (better to be different from the GT)
                 random_start = np.random.randint(0, mel_length - mel_len_st)
