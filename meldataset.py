@@ -228,9 +228,6 @@ class Collater(object):
 
     def __call__(self, batch):
         # batch[0] = wave, mel, text, f0, speakerid
-        if batch is None:
-            print("Skipped batch due to empty data.")
-            continue
         batch_size = len(batch)
         if len(batch) == 0:
             return None
