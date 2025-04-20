@@ -2,6 +2,7 @@
 accelerate launch --num_processes=1 train_first.py --config_path ./Configs/config.yml
 accelerate launch --num_processes=2 train_first.py --config_path ./Configs/config.yml
 nohup accelerate launch --num_processes=1 train_first.py --config_path ./Configs/config.yml > logs/train_$(date +%Y%m%d_%H%M%S).log 2>&1 & disown
+nohup accelerate launch --num_processes=2 train_first.py --config_path ./Configs/config.yml > logs/train_$(date +%Y%m%d_%H%M%S).log 2>&1 & disown
 tail -f logs/train_*.log
 vi Configs/config.yml
 accelerate config

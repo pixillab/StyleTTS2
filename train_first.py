@@ -221,13 +221,19 @@ def main(config_path):
                 
             with torch.no_grad():    
                 real_norm = log_norm(gt.unsqueeze(1)).squeeze(1).detach()
+                real_norm = torch.clamp(real_norm, min=-5, max=5)
                 F0_real, _, _ = model.pitch_extractor(gt.unsqueeze(1))
+                F0_real = torch.clamp(F0_real, min=1e-3, max=300)
                 
             s = model.style_encoder(st.unsqueeze(1) if multispeaker else gt.unsqueeze(1))
+            s = torch.clamp(s, min=-10, max=10)
             gt = gt.clamp(-1.0, 1.0)
             en = en.clamp(-1e2, 1e2)
             y_rec = model.decoder(en, F0_real, real_norm, s)
-            
+            y_rec = torch.clamp(y_rec, min=-1.0, max=1.0) 
+            if torch.isnan(y_rec).any() or torch.isinf(y_rec).any():
+                print("NaNs in y_rec — skipping step")
+                continue
             # discriminator loss
             
             if epoch >= TMA_epoch:
@@ -378,13 +384,21 @@ def main(config_path):
                     continue
 
                 F0_real, _, F0 = model.pitch_extractor(gt.unsqueeze(1))
+                F0_real = torch.clamp(F0_real, min=1e-3, max=300)
                 s = model.style_encoder(gt.unsqueeze(1))
+                s = torch.clamp(s, min=-10, max=10)
+                s = s / s.norm(dim=1, keepdim=True).clamp(min=1.0) * 10
                 real_norm = log_norm(gt.unsqueeze(1)).squeeze(1)
+                real_norm = torch.clamp(real_norm, min=-5, max=5)
                 gt = gt.clamp(-1.0, 1.0)
                 en = en.clamp(-1e2, 1e2)
                 y_rec = model.decoder(en, F0_real, real_norm, s)
 
                 y_rec = y_rec.clamp(-1.0, 1.0)  # add this
+                if torch.isnan(y_rec).any() or torch.isinf(y_rec).any():
+                    print("NaNs in y_rec — skipping step")
+                    continue
+
                 loss_mel = stft_loss(y_rec.squeeze(), wav.detach())
 
                 loss_test += accelerator.gather(loss_mel).mean().item()
@@ -406,12 +420,19 @@ def main(config_path):
                                         
                     F0_real, _, _ = model.pitch_extractor(gt.unsqueeze(1))
                     F0_real = F0_real.unsqueeze(0)
+                    F0_real = torch.clamp(F0_real, min=1e-3, max=300)
                     s = model.style_encoder(gt.unsqueeze(1))
+                    s = torch.clamp(s, min=-10, max=10)
+                    s = s / s.norm(dim=1, keepdim=True).clamp(min=1.0) * 10
                     real_norm = log_norm(gt.unsqueeze(1)).squeeze(1)
+                    real_norm = torch.clamp(real_norm, min=-5, max=5)
                     gt = gt.clamp(-1.0, 1.0)
                     en = en.clamp(-1e2, 1e2)
                     y_rec = model.decoder(en, F0_real, real_norm, s)
-                    
+                    y_rec = torch.clamp(y_rec, min=-1.0, max=1.0)
+                    if torch.isnan(y_rec).any() or torch.isinf(y_rec).any():
+                        print("NaNs in y_rec — skipping step")
+                        continue 
                     writer.add_audio('eval/y' + str(bib), y_rec.cpu().numpy().squeeze(), epoch, sample_rate=sr)
                     if epoch == 0:
                         writer.add_audio('gt/y' + str(bib), waves[bib].squeeze(), epoch, sample_rate=sr)
