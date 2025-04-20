@@ -119,6 +119,10 @@ class FilePathDataset(torch.utils.data.Dataset):
                 idx = random.randint(0, len(self.data_list) - 1)
                 continue
 
+            if mel_tensor.abs().sum() < 1e-3:
+                print(f"[All-zero mel] Skipping: {data[0]}")
+                idx = random.randint(0, len(self.data_list) - 1)
+                continue
             acoustic_feature = mel_tensor[:, :(mel_tensor.shape[1] - mel_tensor.shape[1] % 2)]
 
             try:
@@ -192,7 +196,12 @@ class Collater(object):
 
     def __call__(self, batch):
         # batch[0] = wave, mel, text, f0, speakerid
+        if batch is None:
+            print("Skipped batch due to empty data.")
+            continue
         batch_size = len(batch)
+        if len(batch) == 0:
+            return None
 
         # sort by mel length
         lengths = [b[1].shape[1] for b in batch]
