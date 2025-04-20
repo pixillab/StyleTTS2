@@ -134,11 +134,10 @@ def main(config_path):
 
         _ = [model[key].train() for key in model]
 
-        if batch is None or len(batch) < 2:
-            print(f"[Warning] Skipping batch {i} due to missing data.")
-            continue
-
         for i, batch in enumerate(train_dataloader):
+            if batch is None or len(batch) < 2:
+                print(f"[Warning] Skipping batch {i} due to missing data.")
+                continue
             waves = batch[0]
             batch = [b.to(device) for b in batch[1:]]
             texts, input_lengths, _, _, mels, mel_input_length, _ = batch
